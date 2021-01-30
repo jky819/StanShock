@@ -1,0 +1,136 @@
+# This is a code for using StanShock to get driver insert profile
+
+# Things that need to be inputed:
+
+# Mixture, Mixture properties: dirver and driven section mixture compositions, X4 and X1, and the corresponding .xml file for cantera
+# Thermal, Thermodynamic properties: T5, p5, p1, gamma1, gamma4, W4, W1
+# Sim, Simulation conditions: discretization sizes (nXCoarse, nXFine), tFinal, tTest
+# Geometry, Shock tube geometries: driver and driven section length and diameter
+
+import sys; sys.path.append('../../')
+from stanShock import dSFdx, stanShock, smoothingFunction
+import numpy as np
+import matplotlib as mpl
+from matplotlib import pyplot as plt
+import time
+import cantera as ct
+from scipy.optimize import newton
+
+class ShockSim:
+    def __init__(self, Mixture, Thermal, Sim, Geometry, plot = True, saveData = False):
+        self.Mixture = Mixture
+        self.Thermal = Thermal
+        self.Sim = Sim
+        self.Geometry = Geometry
+        self.plot = plot
+        self.saveData = saveData
+
+    def XT_Diagram(self):
+        # input thermodynamic and shock tube parameters
+        fontsize = 12
+        tFinal = self.Sim['tFinal']
+        p5, p1 = self.Thermal['p5'], self.Thermal['p1']
+        T5 = self.Thermal['T5']
+        g4, g1 = self.Thermal['g4'], self.Thermal['g1']
+        W4, W1 = self.Thermal['W4'], self.Thermal['W1']
+        MachReduction = 1#0.985  # account for shock wave attenuation
+        nXFine = self.Sim['nXFine']  # mesh resolution
+        LDriver, LDriven = self.Geometry['LDriver'], self.Geometry['LDriven']
+        DDriver, DDriven = self.Geometry['DDriver'], self.Geometry['DDriven']
+        plt.close("all")
+        mpl.rcParams['font.size'] = fontsize
+        plt.rc('text', usetex=True)
+
+        # setup geometry
+        xLower = -LDriver
+        xUpper = LDriven
+        xShock = 0.0
+        Delta = 10 * (xUpper - xLower) / float(nXFine)
+        geometry=(nXFine,xLower,xUpper,xShock)
+        DInner = lambda x: np.zeros_like(x)
+        dDInnerdx = lambda x: np.zeros_like(x)
+
+        def DOuter(x): return smoothingFunction(x, xShock, Delta, DDriver, DDriven)
+
+        def dDOuterdx(x): return dSFdx(x, xShock, Delta, DDriver, DDriven)
+
+        A = lambda x: np.pi / 4.0 * (DOuter(x) ** 2.0 - DInner(x) ** 2.0)
+        dAdx = lambda x: np.pi / 2.0 * (DOuter(x) * dDOuterdx(x) - DInner(x) * dDInnerdx(x))
+        dlnAdx = lambda x, t: dAdx(x) / A(x)
+
+        # compute gas dynamics
+        def res(Ms1):
+            return p5 / p1 - ((2.0 * g1 * Ms1 ** 2.0 - (g1 - 1.0)) / (g1 + 1.0)) \
+                   * ((-2.0 * (g1 - 1.0) + Ms1 ** 2.0 * (3.0 * g1 - 1.0)) / (2.0 + Ms1 ** 2.0 * (g1 - 1.0)))
+
+        Ms1 = newton(res, 2.0)
+        Ms1 *= MachReduction
+        T5oT1 = (2.0 * (g1 - 1.0) * Ms1 ** 2.0 + 3.0 - g1) \
+                * ((3.0 * g1 - 1.0) * Ms1 ** 2.0 - 2.0 * (g1 - 1.0)) \
+                / ((g1 + 1.0) ** 2.0 * Ms1 ** 2.0)
+        T1 = T5 / T5oT1
+        a1oa4 = np.sqrt(W4 / W1)
+        p4op1 = (1.0 + 2.0 * g1 / (g1 + 1.0) * (Ms1 ** 2.0 - 1.0)) \
+                * (1.0 - (g4 - 1.0) / (g4 + 1.0) * a1oa4 * (Ms1 - 1.0 / Ms1)) ** (-2.0 * g4 / (g4 - 1.0))
+        p4 = p1 * p4op1
+
+        # set up the gasses
+        u1 = 0.0
+        u4 = 0.0  # initially 0 velocity
+        mech = self.Mixture['mixtureFile']
+        gas1 = ct.Solution(mech)
+        gas4 = ct.Solution(mech)
+        T4 = T1  # assumed
+        gas1.TPX = T1, p1, self.Mixture['X1']
+        gas4.TPX = T4, p4, self.Mixture['X4']
+
+        # set up boundary condition
+        boundaryConditions = ['reflecting', 'reflecting']
+        state1 = (gas1, u1)
+        state4 = (gas4, u4)
+
+        ss = stanShock(gas1, initializeRiemannProblem=(state4, state1, geometry),
+                       boundaryConditions=boundaryConditions,
+                       cfl=.9,
+                       outputEvery=100,
+                       includeBoundaryLayerTerms=self.Sim['BoundaryLayer'],
+                       Tw=T1,  # assume wall temperature is in thermal eq. with gas
+                       DOuter=DOuter,
+                       dlnAdx=dlnAdx)
+        ss.addXTDiagram("p")
+        ss.addXTDiagram("T")
+        ss.addProbe(max(ss.x))  # end wall probe
+        t0 = time.clock()
+        ss.advanceSimulation(tFinal)
+        t1 = time.clock()
+        print("The process took ", t1 - t0)
+        pNoInsert = np.array(ss.probes[0].p)
+        tNoInsert = np.array(ss.probes[0].t)
+        YNoInsert = np.array(ss.probes[0].Y)
+        rNoInsert = np.array(ss.probes[0].r)
+        TNoInsert = np.array(ss.thermoTable.getTemperature(rNoInsert, pNoInsert, YNoInsert))
+        if self.plot:
+            ss.plotXTDiagram(ss.XTDiagrams["t"], limits=[T1 - 500, T5 + 500])
+            ss.plotXTDiagram(ss.XTDiagrams["p"], limits=[p1 / 1e5 - 0.1, p5 / 1e5 + 0.3])
+
+        # plot
+        if self.plot:
+            plt.figure()
+            plt.plot(tNoInsert / 1e-3, pNoInsert / 1e5, 'b') #label="$\mathrm{No\ Insert}$")
+            plt.xlabel("$t\ [\mathrm{ms}]$")
+            plt.ylabel("$p\ [\mathrm{bar}]$")
+            plt.tight_layout()
+            plt.figure()
+            plt.plot(tNoInsert / 1e-3, TNoInsert, 'r') #label="$\mathrm{No\ Insert}$")
+            plt.xlabel("$t\ [\mathrm{ms}]$")
+            plt.ylabel("$T\ [\mathrm{K}]$")
+            plt.tight_layout()
+        self.tNoInsert = tNoInsert
+        self.pNoInsert = pNoInsert
+        self.TNoInsert = TNoInsert
+
+        # save driver insert profiles and pressure traces
+        if self.saveData:
+            np.savetxt('tNoInsert.csv', tNoInsert, delimiter=',')
+            np.savetxt('pNoInsert.csv', pNoInsert, delimiter=',')
+            np.savetxt('TNoInsert.csv', TNoInsert, delimiter=',')
