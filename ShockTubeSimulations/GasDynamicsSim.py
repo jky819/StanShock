@@ -94,6 +94,8 @@ class ShockSim:
                        cfl=.9,
                        outputEvery=100,
                        includeBoundaryLayerTerms=self.Sim['BoundaryLayer'],
+                       reacting = self.Sim['Reacting'],
+                       includeDiffusion=self.Sim['Diffusion'],
                        Tw=T1,  # assume wall temperature is in thermal eq. with gas
                        DOuter=DOuter,
                        dlnAdx=dlnAdx)
@@ -128,9 +130,11 @@ class ShockSim:
         self.tNoInsert = tNoInsert
         self.pNoInsert = pNoInsert
         self.TNoInsert = TNoInsert
+        self.YNoInsert = YNoInsert
 
         # save driver insert profiles and pressure traces
         if self.saveData:
-            np.savetxt('tNoInsert.csv', tNoInsert, delimiter=',')
+            np.savetxt('timeNoInsert.csv', tNoInsert, delimiter=',')
             np.savetxt('pNoInsert.csv', pNoInsert, delimiter=',')
             np.savetxt('TNoInsert.csv', TNoInsert, delimiter=',')
+            np.savetxt('YNoInsert.csv', TNoInsert, delimiter=',')
