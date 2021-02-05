@@ -96,12 +96,12 @@ class ShockSim:
                        includeBoundaryLayerTerms=self.Sim['BoundaryLayer'],
                        reacting = self.Sim['Reacting'],
                        includeDiffusion=self.Sim['Diffusion'],
-                       Tw=T1,  # assume wall temperature is in thermal eq. with gas
+                       Tw=T1+200,  # assume wall temperature is in thermal eq. with gas
                        DOuter=DOuter,
                        dlnAdx=dlnAdx)
         ss.addXTDiagram("p")
         ss.addXTDiagram("T")
-        ss.addProbe(max(ss.x))  # end wall probe
+        ss.addProbe(8)#10-0.005)#max(ss.x))  # end wall probe
         t0 = time.clock()
         ss.advanceSimulation(tFinal)
         t1 = time.clock()
@@ -109,12 +109,18 @@ class ShockSim:
         pNoInsert = np.array(ss.probes[0].p)
         tNoInsert = np.array(ss.probes[0].t)
         YNoInsert = np.array(ss.probes[0].Y)
+        uNoInsert = np.array(ss.probes[0].u)
         rNoInsert = np.array(ss.probes[0].r)
+        sNoInsert = np.array(ss.probes[0].s)
         TNoInsert = np.array(ss.thermoTable.getTemperature(rNoInsert, pNoInsert, YNoInsert))
+        TWall = ss.Tw
         if self.plot:
-            ss.plotXTDiagram(ss.XTDiagrams["t"], limits=[T1 - 500, T5 + 500])
-            ss.plotXTDiagram(ss.XTDiagrams["p"], limits=[p1 / 1e5 - 0.1, p5 / 1e5 + 0.3])
-
+            ss.plotXTDiagram(ss.XTDiagrams["t"], limits=[T1 - 500, T5 + 500], saveData=True)
+            TMatrix = ss.XTDiagram_variableMatrix
+            timeXT = ss.XTDiagram_T
+            positionXT = ss.XTDiagram_X
+            ss.plotXTDiagram(ss.XTDiagrams["p"], limits=[p1 / 1e5 - 0.1, p5 / 1e5 + 0.3], saveData=True)
+            pMatrix = ss.XTDiagram_variableMatrix
         # plot
         if self.plot:
             plt.figure()
@@ -131,10 +137,20 @@ class ShockSim:
         self.pNoInsert = pNoInsert
         self.TNoInsert = TNoInsert
         self.YNoInsert = YNoInsert
-
+        self.uNoInsert = uNoInsert
+        self.sNoInsert = sNoInsert
+        self.Tw = TWall
+        self.TMatrix = TMatrix
+        self.pMatrix = pMatrix
+        self.timeXT = timeXT
+        self.positionXT = positionXT
         # save driver insert profiles and pressure traces
         if self.saveData:
             np.savetxt('timeNoInsert.csv', tNoInsert, delimiter=',')
             np.savetxt('pNoInsert.csv', pNoInsert, delimiter=',')
             np.savetxt('TNoInsert.csv', TNoInsert, delimiter=',')
-            np.savetxt('YNoInsert.csv', TNoInsert, delimiter=',')
+            np.savetxt('YNoInsert.csv', YNoInsert, delimiter=',')
+            np.savetxt('TMatrix.csv', TMatrix, delimiter=',')
+            np.savetxt('pMatrix.csv', pMatrix, delimiter=',')
+            np.savetxt('timeXT.csv', timeXT, delimiter=',')
+            np.savetxt('positionXT.csv', positionXT, delimiter=',')

@@ -548,7 +548,21 @@ class thermoTable(object):
                 T: vector of temperatures
         '''
         R = self.getR(Y)
-        return p/(r*R)     
+        return p/(r*R)
+    def getSoundSpeed(selfself, r, p, gamma):
+        '''
+        Method: getSoundSpeed
+        --------------------------------------------------------------------------
+        This method calculates the local sound speed
+            inputs:
+                r: vector of densities [n]
+                p: vector of pressures [n]
+                gamma: vector of specific heat ratio
+            outputs:
+                s: vector of sound speeds
+        '''
+        s = np.sqrt(gamma*(p/r))
+        return s
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 def smoothingFunction(x,xShock,Delta,phiLeft,phiRight):
             '''
@@ -769,6 +783,7 @@ class stanShock(object):
             self.skipSteps=0 #number of timesteps to skip
             self.t=[]
             self.r=[] #density
+            self.s=[] #sound speed
             self.u=[] #velocity
             self.p=[] #pressure
             self.gamma=[] #specific heat ratio
@@ -854,7 +869,7 @@ class stanShock(object):
         #store the XT Diagram
         self.XTDiagrams[variable]=newXTDiagram
 ##############################################################################
-    def plotXTDiagram(self,XTDiagram,limits=None):
+    def plotXTDiagram(self,XTDiagram,limits=None, saveData = False):
         '''
         Method: plotXTDiagram
         --------------------------------------------------------------------------
@@ -871,6 +886,10 @@ class stanShock(object):
         for k, variablek in enumerate(XTDiagram.variable): 
             variableMatrix[k,:]=variablek
         variable=XTDiagram.name
+        if saveData:
+            self.XTDiagram_variableMatrix = variableMatrix
+            self.XTDiagram_X = X
+            self.XTDiagram_T = T
         if variable in ["density","r","rho"]:
             plt.title("$\\rho\ [\mathrm{kg/m^3}]$")
         elif variable in ["velocity","u"]:
@@ -1408,6 +1427,13 @@ class stanShock(object):
         #Stanton number and heat transfer to wall
         Nu = nusseltNumber(Re,Pr,cf)
         qloss = Nu*conductivity/H*(T-self.Tw)
+        # Update wall temperature due to heat transfer
+        #R_NASA = 15.24e-2
+        #L_NASA = 10
+        #QToWall = qloss*dt*2*np.pi*L_NASA*R_NASA**2
+        #Cp_stainlessSteel = 460.548
+        #m_NASA = 7800*np.pi*(0.1558**2 - R_NASA**2)*L_NASA
+        #self.Tw = self.Tw + QToWall/(Cp_stainlessSteel*m_NASA)
         #update
         (r,ru,E,rY)=self.primitiveToConservative(self.r,self.u,self.p,self.Y,self.gamma)
         ru -= shear*4.0/D*dt
@@ -1479,6 +1505,7 @@ class stanShock(object):
             if iters%(probe.skipSteps+1)==0:
                 probe.t.append(self.t)
                 probe.r.append((interpolate(self.x,self.r,probe.probeLocation)))
+                probe.s.append((interpolate(self.x,self.thermoTable.getSoundSpeed(self.r, self.p, self.gamma),probe.probeLocation)))
                 probe.u.append((interpolate(self.x,self.u,probe.probeLocation)))
                 probe.p.append((interpolate(self.x,self.p,probe.probeLocation)))
                 probe.gamma.append((interpolate(self.x,self.gamma,probe.probeLocation)))
