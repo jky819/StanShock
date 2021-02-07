@@ -1423,10 +1423,10 @@ class stanShock(object):
         if self.cf is None: self.cf = skinFriction() #initialize the functor
         cf = self.cf(Re)
         #shear stress on wall
-        shear=cf*(0.5*self.r*self.u**2.0)*(np.sign(self.u)) 
+        shear=0.7*cf*(0.5*self.r*self.u**2.0)*(np.sign(self.u))
         #Stanton number and heat transfer to wall
         Nu = nusseltNumber(Re,Pr,cf)
-        qloss = Nu*conductivity/H*(T-self.Tw)
+        qloss = 0.3*Nu*conductivity/H*(T-self.Tw)
         # Update wall temperature due to heat transfer
         #R_NASA = 15.24e-2
         #L_NASA = 10
@@ -1436,6 +1436,7 @@ class stanShock(object):
         #self.Tw = self.Tw + QToWall/(Cp_stainlessSteel*m_NASA)
         #update
         (r,ru,E,rY)=self.primitiveToConservative(self.r,self.u,self.p,self.Y,self.gamma)
+        D = 1.5*D
         ru -= shear*4.0/D*dt
         E -= qloss*4.0/D*dt
         (self.r,self.u,self.p,_)=self.conservativeToPrimitive(r,ru,E,rY,self.gamma) 
@@ -1556,7 +1557,34 @@ class stanShock(object):
         lowerIndex = int(float(peakIndices[0]+peakIndices[1]-peakWidth)/2)
         upperIndex = int(float(peakIndices[0]+peakIndices[1]+peakWidth)/2)
         return np.mean(dlnpdt[lowerIndex:upperIndex]), np.mean(p[lowerIndex:upperIndex])
-    
+##############################################################################
+    def CoolingRate(self, t,p):
+        '''
+        Method: CoolingRate
+        ----------------------------------------------------------------------
+        This method calculate the cooling rate from the pressure decay rate after
+        the arrival of the expansion fan. Note that the method assumes the maximum
+        pressure at the end wall is achieved right before the arrival of expansion
+        fan.
+            inputs:
+                t = time [s]
+                p = pressure [pa]
+                peakWidth (optional) =  # of samples to define a peak; this is
+                                        also the number of the number of points
+                                        used to defind the pressure rise region.
+            output:
+                dpdt: rate of pressure decay after expansion fan arrival
+        '''
+        #find the time-derivative of pressure
+        dpdt = np.diff(p/101325)/np.diff(t/(1e-3))
+        # find the start of expansion fan arrival
+        p_max = max(p)
+        maxIndex = p_max == p
+        lowerIndex = [i for i, val in enumerate(maxIndex) if val]
+        lowerIndex = lowerIndex[0]
+        # calculate mean dp/dt to final test time
+        upperIndex = len(t)-1
+        return np.mean(dpdt[lowerIndex:upperIndex])
 ##############################################################################
     def advanceSimulation(self,tFinal):
         '''
@@ -1788,3 +1816,202 @@ class stanShock(object):
             print("Search stopped due to no sample points found yielding enough improvement.")
         elif self.verbose: print("Minimum Found. Setting to minimum state.")
         optimizationFunction(self.designs[np.argmin(self.yOpt)])
+
+    ##############################################################################
+    def optimizeExpFanCooling(self, tFinal, theta = None, eps=1e-4, maxIter=100):
+        '''
+        Method: optimizeDriverInsert
+        ----------------------------------------------------------------------
+        This method finds the driver insert geometry, which minimizes the
+        pressure rise due to boundary layer effects while obtaining the test
+        pressure. The final state of this function is the optimized state.
+            inputs
+                    tFinal = final time
+                    theta = target angle for pressure decay rate
+                    eps = cutoff parameter for the global search. A higher value
+                        indicates a tighter tolerence.
+                    maxIter = maximum number of iterations
+        '''
+        from sklearn.gaussian_process.kernels import RBF  # RBF is the gaussian correlation
+        from sklearn.gaussian_process import GaussianProcessRegressor
+        from scipy.stats import norm
+        # Check for boundary layer terms
+        if not self.includeBoundaryLayerTerms:
+            self.includeBoundaryLayerTerms = True
+            if self.verbose: print("WARNING: Boundary Layer Terms Included")
+        if self.DOuter is None or self.dlnAdx is None:
+            raise Exception("Expansion fan cooling optimization must have DOuter and dlnAdx definied")
+        if theta is None:
+            if self.verbose: print("WARNING: target decay rate not included. Setting to theta = -3.2 degree.")
+            theta= -3.2/180*np.pi
+        if self.DInner is not None:
+            raise Exception("Expansion fan cooling optimization cannot have an inner diameter")
+        if self.p[0] < self.p[-1]:
+            raise Exception("Optimization routine requires the driver gas to be on the left.")
+        # Get initial state for reinitialization
+        rInitial = np.copy(self.r)
+        uInitial = np.copy(self.u)
+        pInitial = np.copy(self.p)
+        YInitial = np.copy(self.Y)
+        gammaInitial = np.copy(self.gamma)
+        dlnAdxInitial = self.dlnAdx
+        dDOuterdx = lambda x: self.DOuter(x) / 2.0 * dlnAdxInitial(x, 0.0)  # assume temporally constant area
+        # Determine geometry from pressure
+        dpAbs = np.abs(pInitial[1:] - pInitial[:-1])
+        xShock = max(zip(dpAbs, self.x[1:]))[1]  # maximum pressure gradient corresponds to shock
+        (xMin, xMax, probeLocation) = (self.x[0], xShock, self.x[-1])
+        LMax = (xMax - xMin)  # maximum length of constrained optimization
+        DMax = min(self.DOuter(np.linspace(xMin, xMax)))  # maximum diameter of constrained optimization
+        smoothingLength = 10 * self.dx
+        if LMax <= smoothingLength:
+            raise Exception("This calculation will likely be unstable. Refine the grid")
+        alphaMax = lambda L: 1.0 - smoothingLength / L
+        (LMin, DMin, alphaMin) = (smoothingLength, 0.0, 0.0)  # no driver bound (no negative lengths)
+
+        # calculate a smoothing length for numerical stability
+        #######################################################################
+        def optimizationFunctionCooling(design):
+            '''
+            Function: optimizationFunction
+            ----------------------------------------------------------------------
+            This function solves the shocktube problem and returns the absolute pressure rise. The insert geometry is assumed to
+            vary linearly in area
+                inputs:
+                    design=tuple with
+                        (total length of insert, maximum diameter of insert, ratio of constant portion of insert to entire insert)
+
+            '''
+            # determine the geometry
+            (LInsert, DInsert, alpha) = design
+            xIns0, xIns1 = xMin + LInsert * alpha, xMin + LInsert
+            AIns0 = np.pi * DInsert ** 2.0 / 4.0
+
+            def AInsert(x):
+                AIns = np.zeros_like(x)
+                inds = np.logical_and(x >= xIns0, x < xIns1)
+                AIns[inds] = AIns0 * (1.0 - (x[inds] - xIns0) / (xIns1 - xIns0))
+                AIns[x < xIns0] = AIns0
+                return AIns
+
+            def dAInsertdx(x):
+                dAInsdx = np.zeros_like(x)
+                inds = np.logical_and(x >= xIns0, x < xIns1)
+                dAInsdx[inds] = -AIns0 / (xIns1 - xIns0)
+                return dAInsdx
+
+            def DInner(x):
+                return np.sqrt(4.0 * AInsert(x) / np.pi)
+
+            def dDInnerdx(x):
+                dDIndx = np.zeros_like(x)
+                inds = np.logical_and(x >= xIns0, x < xIns1)
+                dDIndx[inds] = 0.5 * (4.0 * AInsert(x[inds]) / np.pi) ** -0.5 * (4.0 * dAInsertdx(x[inds]) / np.pi)
+                return dDIndx
+
+            A = lambda x: np.pi / 4.0 * (self.DOuter(x) ** 2.0 - DInner(x) ** 2.0)
+            dAdx = lambda x: np.pi / 2.0 * (self.DOuter(x) * dDOuterdx(x) - DInner(x) * dDInnerdx(x))
+            # initialize (may be at a previous state in the optimization)
+            self.dlnAdx = lambda x, t: dAdx(x) / A(x)
+            self.DInner = DInner
+            self.r = np.copy(rInitial)
+            self.u = np.copy(uInitial)
+            self.p = np.copy(pInitial)
+            self.Y = np.copy(YInitial)
+            self.gamma = np.copy(gammaInitial)
+            # delete previous probes and create an endwall probe
+            self.probes = []
+            self.addProbe(probeLocation, skipSteps=0, probeName="endwall probe")
+            # solve
+            if self.verbose: print("Solving Optimization. Iteration=%i, L=%.3f, D=%.3f, alpha=%.3f" % (
+            self.optimizationIteration, LInsert, DInsert, alpha))
+            self.t = 0.0
+            self.advanceSimulation(tFinal)
+            self.optimizationIteration += 1
+            # return
+            dpdt= self.CoolingRate(np.array(self.probes[0].t), np.array(self.probes[0].p))
+            if self.verbose: print("Finished with optimization iteration. theta=%f" % (np.arctan(dpdt)/np.pi*180))
+            return (np.arctan(dpdt)-theta/180*np.pi) ** 2.0
+        #######################################################################
+        def midpointVector(xMin, xMax, nMidpoints):
+            '''
+            Function: midpointVector
+            -------------------------------------------------------------------
+            This function returns a vector to sample from. The vector is
+            uniformly space and is non-inclusive of the bounds
+                inputs:
+                    xMin=lower bound
+                    xMax=upper bound
+                    nMidpoints=number of sampling locations
+                output:
+                    sample vector
+                    spacing (dx)
+            '''
+            dx = (xMax - xMin) / float(nMidpoints)
+            return xMin + dx / 2.0 + dx * np.arange(0, nMidpoints)
+
+        #######################################################################
+        # develop initial grid of points
+        nGrid = 3
+        self.designs = []
+        for L in midpointVector(LMin, LMax, nGrid):
+            for D in midpointVector(DMin, DMax, nGrid):
+                for a in midpointVector(alphaMin, alphaMax(L), nGrid):
+                    self.designs.append((L, D, a))
+        # solve for each grid point on the initial parameter space
+        nDesigns = len(self.designs)
+        self.yOpt = []  # evaluated points
+        if self.verbose: print("Solving initial grid of %i points." % (nDesigns))
+        for iDesign, design in enumerate(self.designs): self.yOpt.append(optimizationFunctionCooling(design))
+        # initialize the Gaussian Random Process as a surrogate
+        kernel = 1.0 * RBF(length_scale=1.0, length_scale_bounds=(1e-1, 10.0))  # iniitialize
+        gp = GaussianProcessRegressor(kernel=kernel)
+        # determine the grid to search over with the surrogate model
+        nHat = 30
+        XHat = []
+        for L in midpointVector(LMin, LMax, nHat):
+            for D in midpointVector(DMin, DMax, nHat):
+                for a in midpointVector(alphaMin, alphaMax(L), nHat):
+                    XHat.append((L, D, a))
+        XHat = np.array(XHat)
+        # iterate until optimum is found
+        ymin = min(self.yOpt)
+        if self.verbose: print("Finding Optimum.")
+        minImprovement = eps / 10.0
+        maxImprovement = minImprovement + 1.0
+        while ymin > eps \
+                and self.optimizationIteration < maxIter \
+                and maxImprovement > minImprovement:
+            # fit the GP
+            X = np.array(self.designs)
+            gp.fit(X, np.array(self.yOpt))
+            YHat = gp.predict(XHat)
+            # find the improvement
+            parameters = gp.kernel_.get_params()
+            sigmaSqrd = parameters['k1__constant_value']
+            R = gp.kernel_.k2  # correlation matrix
+            RInv = np.linalg.inv(R(X))
+            ExpImprovements = np.zeros(XHat.shape[0])
+            ymin = min(self.yOpt)
+            rs = R(X, Y=XHat)
+            r = np.sum(RInv.dot(rs) * rs, axis=0)
+            sSqrds = sigmaSqrd * (1.0 - r)
+            ind = sSqrds <= 0
+            ExpImprovements[ind] = np.maximum(ymin - YHat[ind], np.zeros_like(YHat[ind]))
+            ind = sSqrds > 0
+            s = np.sqrt(sSqrds[ind])
+            T = (ymin - YHat[ind]) / s
+            ExpImprovements[ind] = s * (T * norm.cdf(T) + norm.pdf(T))
+            # find the maximum improvement and compute the new datum
+            maxImprovement = np.max(ExpImprovements)
+            self.designs.append(XHat[np.argmax(ExpImprovements), :])
+            self.yOpt.append(optimizationFunctionCooling(self.designs[-1]))
+            if self.verbose: print(
+                "Minimum of current iteration: %f. Expected improvement of the next iteration: %f" % (
+                ymin, maxImprovement))
+        if self.optimizationIteration >= maxIter and self.verbose:
+            print("No minimum found within tolerance.")
+        elif maxImprovement <= minImprovement and self.verbose:
+            print("Search stopped due to no sample points found yielding enough improvement.")
+        elif self.verbose:
+            print("Minimum Found. Setting to minimum state.")
+        optimizationFunctionCooling(self.designs[np.argmin(self.yOpt)])
