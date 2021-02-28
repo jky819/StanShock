@@ -77,7 +77,7 @@ class CoolingOpt:
         # set up the gasses
         u1 = 0.0;
         u4 = 0.0;  # initially 0 velocity
-        mech = self.Mixture['mixtureFile']
+        mech = self.Mixture['mechanism']
         gas1 = ct.Solution(mech)
         gas4 = ct.Solution(mech)
         T4 = T1;  # assumed
@@ -242,7 +242,7 @@ class CoolingOpt:
 
             plt.figure()
             plt.axis('equal')
-            plt.xlim((-2, 0.5))
+            plt.xlim((-3, 0))
             plt.plot(xInsert, DOuterInsert, 'k', label="$D_\mathrm{o}$")
             plt.plot(xInsert, DInnerInsert, 'r', label="$D_\mathrm{i}$")
             plt.plot(xInsert_dis, DInnerInsert_dis, 'b', label="$D_\mathrm{dis}$")
@@ -277,3 +277,116 @@ class CoolingOpt:
             np.savetxt('DOuterInsert.csv', DOuterInsert, delimiter=',')
             np.savetxt('DInnerInsert.csv', DInnerInsert, delimiter=',')
             np.savetxt('DInnerInsert_dis.csv', DInnerInsert_dis, delimiter=',')
+    def runShock(self, X, gas = 'N2'):
+
+        if gas == 'N2':
+            gamma = 7/5
+            MW = 28
+            gas_name = ',N2:'
+        elif gas == 'AR':
+            gamma = 5/3
+            MW = 39.95
+            gas_name = ',AR:'
+        else:
+            raise Exception('Unsupported Driver Gas!')
+        # input thermodynamic and shock tube parameters
+        fontsize = 12
+        tFinal = self.Sim['tFinal']
+        p5, p1 = self.Thermal['p5'], self.Thermal['p1']
+        T5 = self.Thermal['T5']
+        g4 = X*(gamma) + (1-X)*(5/3)
+        g1 = self.Thermal['g1']
+        W4 = X*(MW) + (1-X)*(4)
+        W1 = self.Thermal['W1']
+        MachReduction = 0.985  # account for shock wave attenuation
+        nXCoarse, nXFine = self.Sim['nXCoarse'], self.Sim['nXFine']  # mesh resolution
+        LDriver, LDriven = self.Geometry['LDriver'], self.Geometry['LDriven']
+        DDriver, DDriven = self.Geometry['DDriver'], self.Geometry['DDriven']
+        plt.close("all")
+        mpl.rcParams['font.size'] = fontsize
+        plt.rc('text', usetex=True)
+
+        # setup geometry
+        xLower = -LDriver
+        xUpper = LDriven
+        xShock = 0.0
+        Delta = 10 * (xUpper - xLower) / float(nXFine)
+        geometry = (nXCoarse, xLower, xUpper, xShock)
+        DInner = lambda x: np.zeros_like(x)
+        dDInnerdx = lambda x: np.zeros_like(x)
+
+        def DOuter(x): return smoothingFunction(x, xShock, Delta, DDriver, DDriven)
+
+        def dDOuterdx(x): return dSFdx(x, xShock, Delta, DDriver, DDriven)
+
+        A = lambda x: np.pi / 4.0 * (DOuter(x) ** 2.0 - DInner(x) ** 2.0)
+        dAdx = lambda x: np.pi / 2.0 * (DOuter(x) * dDOuterdx(x) - DInner(x) * dDInnerdx(x))
+        dlnAdx = lambda x, t: dAdx(x) / A(x)
+
+        # compute gas dynamics
+        def res(Ms1):
+            return p5 / p1 - ((2.0 * g1 * Ms1 ** 2.0 - (g1 - 1.0)) / (g1 + 1.0)) \
+                   * ((-2.0 * (g1 - 1.0) + Ms1 ** 2.0 * (3.0 * g1 - 1.0)) / (2.0 + Ms1 ** 2.0 * (g1 - 1.0)))
+
+        Ms1 = newton(res, 2.0)
+        Ms1 *= MachReduction
+        T5oT1 = (2.0 * (g1 - 1.0) * Ms1 ** 2.0 + 3.0 - g1) \
+                * ((3.0 * g1 - 1.0) * Ms1 ** 2.0 - 2.0 * (g1 - 1.0)) \
+                / ((g1 + 1.0) ** 2.0 * Ms1 ** 2.0)
+        T1 = T5 / T5oT1
+        a1oa4 = np.sqrt(W4 / W1)
+        p4op1 = (1.0 + 2.0 * g1 / (g1 + 1.0) * (Ms1 ** 2.0 - 1.0)) \
+                * (1.0 - (g4 - 1.0) / (g4 + 1.0) * a1oa4 * (Ms1 - 1.0 / Ms1)) ** (-2.0 * g4 / (g4 - 1.0))
+        p4 = p1 * p4op1
+
+        # set up the gasses
+        u1 = 0.0;
+        u4 = 0.0;  # initially 0 velocity
+        mech = self.Mixture['mechanism']
+        gas1 = ct.Solution(mech)
+        gas4 = ct.Solution(mech)
+        T4 = T1;  # assumed
+        X4 = 'HE:'+ str(1-X) + gas_name + str(X)
+        gas1.TPX = T1, p1, self.Mixture['X1']
+        gas4.TPX = T4, p4, X4
+
+        # set up solver parameter
+        boundaryConditions = ['reflecting', 'reflecting']
+        state1 = (gas1, u1)
+        state4 = (gas4, u4)
+        # recalculate at higher resolution without the insert
+        ss = stanShock(gas1, initializeRiemannProblem=(state4, state1, geometry),
+                       boundaryConditions=boundaryConditions,
+                       cfl=.9,
+                       outputEvery=100,
+                       includeBoundaryLayerTerms=True,
+                       Tw=T1,  # assume wall temperature is in thermal eq. with gas
+                       DOuter=DOuter,
+                       dlnAdx=dlnAdx)
+        ss.addXTDiagram("p")
+        ss.addXTDiagram("T")
+        ss.addProbe(max(ss.x))  # end wall probe
+        t0 = time.clock()
+        ss.advanceSimulation(tFinal)
+        t1 = time.clock()
+        print("The process took ", t1 - t0)
+        pNoInsert = np.array(ss.probes[0].p)
+        tNoInsert = np.array(ss.probes[0].t)
+        dpdt = ss.CoolingRate(tNoInsert, pNoInsert)
+
+        return dpdt
+
+    def CoolDriverGas(self, Range, gas):
+        dpdt = np.zeros_like(Range)
+        cnt = 0
+        for X in Range:
+            dpdt[cnt] = self.runShock(X, gas=gas)
+            cnt = cnt+1
+
+        if self.plot:
+            plt.figure()
+            plt.plot(Range, dpdt)
+            plt.xlabel('Mole Fraction')
+            plt.ylabel('Post Expansion Fan End Wall dp/dt (atm/ms)')
+
+        return dpdt

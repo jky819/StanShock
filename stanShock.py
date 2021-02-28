@@ -755,6 +755,9 @@ class stanShock(object):
         self.DInner = None #Inner diameter of the shock tube as a function of x (needed for BL)
         self.DOuter = None #Outer diameter of the shock tube as a function of x (needed for BL)
         self.Tw = None #temperature of the wall (needed for BL)
+        self.alpha = 1
+        self.beta = 1
+        self.D_mul = 1
         self.thermoTable = thermoTable(gas) #thermodynamic table object
         self.optimizationIteration = 0 #counter to keep track of optimization
         self.reacting = False #flag to solver about whether to solve source terms
@@ -1422,11 +1425,17 @@ class stanShock(object):
         #skin friction coefficent
         if self.cf is None: self.cf = skinFriction() #initialize the functor
         cf = self.cf(Re)
+
+        # -------------------------------------------------------------
         #shear stress on wall
-        shear=0.7*cf*(0.5*self.r*self.u**2.0)*(np.sign(self.u))
+        shear=(self.alpha)*cf*(0.5*self.r*self.u**2.0)*(np.sign(self.u))
         #Stanton number and heat transfer to wall
+        # -------------------------------------------------------------
+
         Nu = nusseltNumber(Re,Pr,cf)
-        qloss = 0.3*Nu*conductivity/H*(T-self.Tw)
+        # -------------------------------------------------------------
+        qloss = (self.beta)*Nu*conductivity/H*(T-self.Tw)
+        # -------------------------------------------------------------
         # Update wall temperature due to heat transfer
         #R_NASA = 15.24e-2
         #L_NASA = 10
@@ -1436,7 +1445,10 @@ class stanShock(object):
         #self.Tw = self.Tw + QToWall/(Cp_stainlessSteel*m_NASA)
         #update
         (r,ru,E,rY)=self.primitiveToConservative(self.r,self.u,self.p,self.Y,self.gamma)
-        D = 1.5*D
+        # -------------------------------------------------------------
+        # multiplier to account for supersonic post shock flow
+        D = (self.D_mul)*D
+        # -------------------------------------------------------------
         ru -= shear*4.0/D*dt
         E -= qloss*4.0/D*dt
         (self.r,self.u,self.p,_)=self.conservativeToPrimitive(r,ru,E,rY,self.gamma) 
@@ -1761,6 +1773,7 @@ class stanShock(object):
             for D in midpointVector(DMin,DMax,nGrid):
                 for a in midpointVector(alphaMin,alphaMax(L),nGrid):
                     self.designs.append((L,D,a))
+        print(f'self.designs = {self.designs}')  # TODO: delete diagnostic print statement
         #solve for each grid point on the initial parameter space
         nDesigns = len(self.designs)
         self.yOpt = [] #evaluated points
