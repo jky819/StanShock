@@ -416,8 +416,8 @@ class InsertOpt:
 
         # Interpolate to get a function of the discrete insert profile
         dx = xInsert[1]-xInsert[0]
-        xInsert = np.append(xInsert[0]-dx, xInsert)
-        xInsert = np.append(xInsert, xInsert[-1]+dx)
+        xInsert = np.append(xInsert[0]-dx*2, xInsert)
+        xInsert = np.append(xInsert, xInsert[-1]+dx*2)
         DOuterInsert = np.append(DOuterInsert[0], DOuterInsert)
         DOuterInsert = np.append(DOuterInsert, DOuterInsert[-1])
         DInnerInsert = np.append(DInnerInsert[0], DInnerInsert)
@@ -448,6 +448,7 @@ class InsertOpt:
         # calculate the rate of area change with x
         dAdx = lambda x: np.pi / 2.0 * (DOuter(x) * dDOuterdx(x) - DInner(x) * dDInnerdx(x))
         dlnAdx = lambda x, t: dAdx(x) / A(x)
+
 
         # set up the gasses
         u1 = 0.0
@@ -500,11 +501,12 @@ class InsertOpt:
         if self.plot:
             ss.plotXTDiagram(ss.XTDiagrams["t"], limits=[min(TInsert), max(TInsert)])
             ss.plotXTDiagram(ss.XTDiagrams["p"], limits=[min(pInsert) / 1e5, max(pInsert) / 1e5])
+        '''
         # ----------------------------------------------------------------------------------------
         # Now simulate discretized insert
         # ----------------------------------------------------------------------------------------
         # setup geometry of discrete insert
-
+        
         DIn = ss.DInner(ss.x)
         xIn = ss.x
         disX = xIn[0:-1:x_step]
@@ -580,6 +582,7 @@ class InsertOpt:
         if self.plot:
             ss.plotXTDiagram(ss.XTDiagrams["t"], limits=[min(TInsert_dis), max(TInsert_dis)])
             ss.plotXTDiagram(ss.XTDiagrams["p"], limits=[min(pInsert_dis)/1e5, max(pInsert_dis)/1e5])
+        '''
         # ----------------------------------------------------------------------------------------
         # Now simulate without insert
         # ----------------------------------------------------------------------------------------
@@ -631,7 +634,7 @@ class InsertOpt:
             plt.figure()
             plt.plot(tNoInsert / 1e-3, pNoInsert / 1e5, 'k', label="$\mathrm{No\ Insert}$")
             plt.plot(tInsert / 1e-3, pInsert / 1e5, 'r', label="$\mathrm{Optimized\ Insert}$")
-            plt.plot(tInsert_dis / 1e-3, pInsert_dis / 1e5, '--b', label="$\mathrm{Optimized\ Discrete\ Insert}$")
+            #plt.plot(tInsert_dis / 1e-3, pInsert_dis / 1e5, '--b', label="$\mathrm{Optimized\ Discrete\ Insert}$")
             plt.xlabel("$t\ [\mathrm{ms}]$")
             plt.ylabel("$p\ [\mathrm{bar}]$")
             plt.legend(loc="best")
@@ -642,7 +645,7 @@ class InsertOpt:
             plt.xlim((-2, 0.5))
             plt.plot(xInsert, DOuterInsert, 'k', label="$D_\mathrm{o}$")
             plt.plot(xInsert, DInnerInsert, 'r', label="$D_\mathrm{i}$")
-            plt.plot(xInsert_dis, DInnerInsert_dis, 'b', label="$D_\mathrm{dis}$")
+            #plt.plot(xInsert_dis, DInnerInsert_dis, 'b', label="$D_\mathrm{dis}$")
             plt.plot([xShock, xShock], [-0.8, 0.8], 'k--')
             plt.xlabel("$x\ [\mathrm{m}]$")
             plt.ylabel("$D\ [\mathrm{m}]$")
@@ -653,12 +656,12 @@ class InsertOpt:
             np.savetxt('pNoInsert.csv', pNoInsert, delimiter=',')
             np.savetxt('tInsert.csv', tInsert, delimiter=',')
             np.savetxt('pInsert.csv', pInsert, delimiter=',')
-            np.savetxt('tInsert_dis.csv', tInsert_dis, delimiter=',')
-            np.savetxt('pInsert_dis.csv', pInsert_dis, delimiter=',')
+            #np.savetxt('tInsert_dis.csv', tInsert_dis, delimiter=',')
+            #np.savetxt('pInsert_dis.csv', pInsert_dis, delimiter=',')
     ####################################################################################################################
     def SimulateInsertDiscrete(self, disX, disD):
         '''
-           Method to simulate the shock tube flow given a continuous driver insert profile
+           Method to simulate the shock tube flow given a discrete driver insert profile
         '''
 
         # set up input thermodynamic and shock tube parameters
@@ -939,7 +942,8 @@ class InsertOpt:
                 'C':    1.6875*inchToMeter,
                 'B':    1.5*inchToMeter,
                 'A':    1.4375*inchToMeter,
-                'O':    1.125*inchToMeter
+                'O':    1.125*inchToMeter,
+                'Rod':  0.5*inchToMeter
             }
 
             # export insert profile
@@ -954,6 +958,7 @@ class InsertOpt:
                 disD[i] = KeyToDiameter[key]
                 disX[i] = insertLength*inchToMeter
                 i = i+1
+            #print(disX)
             disX = disX-self.Geometry['LDriver']
             self.SimulateInsertDiscrete(disX, disD)
         else:

@@ -204,12 +204,11 @@ class ShockSim:
                 * ((3.0 * g1 - 1.0) * Ms1 ** 2.0 - 2.0 * (g1 - 1.0)) \
                 / ((g1 + 1.0) ** 2.0 * Ms1 ** 2.0)
         T1 = T5 / T5oT1
-        print(T1)
         a1oa4 = np.sqrt(W4 / W1)
         p4op1 = (1.0 + 2.0 * g1 / (g1 + 1.0) * (Ms1 ** 2.0 - 1.0)) \
                 * (1.0 - (g4 - 1.0) / (g4 + 1.0) * a1oa4 * (Ms1 - 1.0 / Ms1)) ** (-2.0 * g4 / (g4 - 1.0))
         p4 = p1 * p4op1
-
+        print(f'Calculated p1 = {p1:4.1f}Pa, p4 = {p4:4.1f}Pa, T1 = {T1-273:4.1f}C')
         # set up the gasses
         u1 = 0.0
         u4 = 0.0  # initially 0 velocity

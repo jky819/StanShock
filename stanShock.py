@@ -24,6 +24,7 @@ from numba import double, jit
 import cantera as ct
 import matplotlib.pyplot as plt
 from scipy.optimize import root
+from scipy.optimize import newton
 
 #Global variables (paramters) used by the solver
 mt=3 #number of ghost nodes
@@ -418,7 +419,12 @@ def getCp_python(T,Y,TTable,a,b):
     #determine cp
     cp = np.zeros(nX)
     for iX in range(nX):
-        if (T[iX]<TMin) or (T[iX]>TMax): raise Exception("Temperature not within table")
+        if (T[iX]>TMax): raise Exception("Temperature not within table")#if (T[iX]<TMin) or (T[iX]>TMax): raise Exception("Temperature not within table")
+        # TODO: change back this line after testing!
+        if (T[iX]<TMin):
+            T[iX] = 0.5*(T[iX+1]+T[iX-1])
+            #print('the location is: ')
+            #print(iX/500*(3.63+9.73))
         index = indices[iX]
         bbar=0.0
         for iSp in range(nSp):
@@ -496,6 +502,7 @@ class thermoTable(object):
             outputs:
                 cp: vector of constant pressure specific heats
         '''
+
         return getCp(T,Y,self.T,self.a,self.b)
 ##############################################################################
     def getH0(self,T,Y):
@@ -1415,7 +1422,19 @@ class stanShock(object):
         conductivity=np.zeros(nX)
         for i,Ti in enumerate(T):
             #compute gas properties
-            self.gas.TP = Ti,self.p[i]
+            # -------------------------------------------------
+            # TODO: delete the try except lines after testing!
+            try:
+                self.gas.TP = Ti,self.p[i]
+            except:
+                print('Warning: grid not sufficient for simulation, refine grid and try again!')
+                print('Current Temperature (K) at grid points:')
+                print([T[i-1], T[i], T[i+1]])
+                print('Current pressure (Pa) at grid points:')
+                print([self.p[i-1], self.p[i], self.p[i+1]])
+                print('Interpolate pressure for now and advance.')
+                self.p[i] = 0.5*(self.p[i-1]+self.p[i+1])
+            # -------------------------------------------------
             if self.gas.n_species>1: self.gas.Y= self.Y[i,:]
             viscosity[i]=self.gas.viscosity
             conductivity[i]=self.gas.thermal_conductivity
@@ -1661,13 +1680,15 @@ class stanShock(object):
         if tTest is None:
             if self.verbose: print("WARNING: the normalization time is not included. Setting to the simulation time.")
             tTest=tFinal
-        if p5 is None and tradeoffParam!=0:
+            # TODO: look into the tradeoffParam
+        if p5 is None:# and tradeoffParam!=0:
             if self.verbose: print("WARNING: the target test pressure is not provided. Determining p5 via normal shock relations")
             g1, g4 = self.gamma[-1], self.gamma[0]
             p4op1 = self.p[0]/self.p[-1]
             r4or1 = self.r[0]/self.r[-1]
             a4oa1 = np.sqrt(g4/g1*p4op1/r4or1)
-            def res(Ms1): p4op1 - (1.0+2.0*g1/(g1+1.0)*(Ms1**2.0-1.0))\
+            def res(Ms1):
+                return p4op1 - (1.0+2.0*g1/(g1+1.0)*(Ms1**2.0-1.0))\
                           *(1.0-(g4-1.0)/(g4+1.0)/a4oa1*(Ms1-1.0/Ms1))**(-2.0*g4/(g4-1.0))
             Ms1 = newton(res,2.0)
             p5op1 = ((2.0*g1*Ms1**2.0-(g1-1.0))/(g1+1.0))\
@@ -1769,11 +1790,11 @@ class stanShock(object):
         #develop initial grid of points
         nGrid=3
         self.designs = []
+        # TODO: look into how to modify the Lmin to produce a better guess
         for L in midpointVector(LMin,LMax,nGrid):
             for D in midpointVector(DMin,DMax,nGrid):
                 for a in midpointVector(alphaMin,alphaMax(L),nGrid):
                     self.designs.append((L,D,a))
-        print(f'self.designs = {self.designs}')  # TODO: delete diagnostic print statement
         #solve for each grid point on the initial parameter space
         nDesigns = len(self.designs)
         self.yOpt = [] #evaluated points
